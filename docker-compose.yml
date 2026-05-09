@@ -1,0 +1,87 @@
+version: "3.9"
+
+networks:
+  agrosense-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agrosense
+      POSTGRES_USER: agrosense
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - agrosense-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agrosense"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - agrosense-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api-ingest:
+    build:
+      context: ./services/api-ingest
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://agrosense:${POSTGRES_PASSWORD}@postgres:5432/agrosense
+      API_SECRET_KEY: ${API_SECRET_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - agrosense-net
+
+  processor-worker:
+    build:
+      context: ./services/processor-worker
+      dockerfile: Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://agrosense:${POSTGRES_PASSWORD}@postgres:5432/agrosense
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - agrosense-net
+
+  drone-simulator:
+    build:
+      context: ./services/drone-simulator
+      dockerfile: Dockerfile
+    environment:
+      API_URL: http://api-ingest:8000
+      DRONES: 3
+      INTERVAL_SECONDS: 5
+    depends_on:
+      api-ingest:
+        condition: service_started
+    networks:
+      - agrosense-net
